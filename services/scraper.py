@@ -273,7 +273,7 @@ async def run_scraping_job(
 
             # Load prodi target list
             if not os.path.exists(PRODI_LIST_FILE):
-                await send_log(job_id, "error", f"❌ File prodi_target_list.json tidak ditemukan")
+                await send_log(job_id, "error", f"❌ File prodi_target_list.json tidak ditemukan", db)
                 await _fail_job(db, job_id, "prodi_target_list.json not found")
                 return
 
@@ -288,7 +288,7 @@ async def run_scraping_job(
                     t["rumpun"] = rumpun
                     targets.append(t)
 
-            await send_log(job_id, "info", f"📋 Ditemukan {len(targets)} prodi target dari filter")
+            await send_log(job_id, "info", f"📋 Ditemukan {len(targets)} prodi target dari filter", db)
 
             # Update job
             await db.execute(
@@ -297,7 +297,7 @@ async def run_scraping_job(
             await db.commit()
 
             # STEP 1: Resolve prodi IDs
-            await send_log(job_id, "info", "🔍 STEP 1: Resolving prodi IDs dari API PDDikti...")
+            await send_log(job_id, "info", "🔍 STEP 1: Resolving prodi IDs dari API PDDikti...", db)
             resolved = []
             not_found = 0
             seen_ids = set()
@@ -339,7 +339,8 @@ async def run_scraping_job(
                     await send_log(
                         job_id, "info",
                         f"🔍 Progress resolve: {i}/{len(targets)} — "
-                        f"resolved: {len(resolved)}, gagal: {not_found}"
+                        f"resolved: {len(resolved)}, gagal: {not_found}",
+                        db
                     )
                     await send_progress(job_id, {
                         "phase": "resolve",
@@ -358,13 +359,15 @@ async def run_scraping_job(
 
             await send_log(
                 job_id, "success",
-                f"✅ STEP 1 selesai: {len(resolved)} prodi resolved, {not_found} tidak ditemukan"
+                f"✅ STEP 1 selesai: {len(resolved)} prodi resolved, {not_found} tidak ditemukan",
+                db
             )
 
             # STEP 2: Fetch dosen homebase
             await send_log(
                 job_id, "info",
-                f"📚 STEP 2: Mengambil dosen dari {len(resolved)} prodi × {len(semesters)} semester..."
+                f"📚 STEP 2: Mengambil dosen dari {len(resolved)} prodi × {len(semesters)} semester...",
+                db
             )
 
             all_dosen = []
@@ -424,7 +427,8 @@ async def run_scraping_job(
                     await send_log(
                         job_id, "info",
                         f"📊 [{i}/{len(resolved)}] {prodi_label} → "
-                        f"{prodi_new} baru | Total: {len(all_dosen)}"
+                        f"{prodi_new} baru | Total: {len(all_dosen)}",
+                        db
                     )
                     await send_progress(job_id, {
                         "phase": "fetch",
@@ -446,11 +450,12 @@ async def run_scraping_job(
 
             await send_log(
                 job_id, "success",
-                f"✅ STEP 2 selesai: {len(all_dosen)} dosen unik ditemukan"
+                f"✅ STEP 2 selesai: {len(all_dosen)} dosen unik ditemukan",
+                db
             )
 
             # STEP 3: Fetch profiles & save to DB
-            await send_log(job_id, "info", f"💾 STEP 3: Fetching profil & menyimpan ke database...")
+            await send_log(job_id, "info", f"💾 STEP 3: Fetching profil & menyimpan ke database...", db)
 
             saved_count = 0
             for i, dosen_data in enumerate(all_dosen, 1):
@@ -553,7 +558,8 @@ async def run_scraping_job(
                     await db.commit()
                     await send_log(
                         job_id, "info",
-                        f"💾 Tersimpan: {saved_count}/{len(all_dosen)} dosen"
+                        f"💾 Tersimpan: {saved_count}/{len(all_dosen)} dosen",
+                        db
                     )
                     await send_progress(job_id, {
                         "phase": "save",
@@ -587,7 +593,8 @@ async def run_scraping_job(
 
             await send_log(
                 job_id, "success",
-                f"🎉 Scraping selesai! {saved_count} dosen tersimpan ({elapsed})"
+                f"🎉 Scraping selesai! {saved_count} dosen tersimpan ({elapsed})",
+                db
             )
 
             from routers.scrape_router import broadcast_to_job
@@ -600,7 +607,7 @@ async def run_scraping_job(
             })
 
         except asyncio.CancelledError:
-            await send_log(job_id, "warning", "⚠️ Scraping dibatalkan")
+            await send_log(job_id, "warning", "⚠️ Scraping dibatalkan", db)
             await db.execute(
                 update(ScrapeJob).where(ScrapeJob.id == job_id).values(
                     status="cancelled",
@@ -612,7 +619,7 @@ async def run_scraping_job(
 
         except Exception as e:
             error_msg = str(e)
-            await send_log(job_id, "error", f"❌ Error: {error_msg}")
+            await send_log(job_id, "error", f"❌ Error: {error_msg}", db)
             await _fail_job(db, job_id, error_msg)
 
 
