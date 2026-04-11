@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, or_, and_, desc, asc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import get_current_user, log_activity
+from auth import get_current_user, get_current_user_for_download, log_activity
 from database import get_db
 from models import Dosen, PerguruanTinggi, ProgramStudi, ScrapeJob, User
 
@@ -282,7 +282,7 @@ async def export_excel(
     status_aktivitas: Optional[str] = Query(None, alias="status"),
     status_ikatan_kerja: Optional[str] = Query(None, alias="ikatan_kerja"),
     pt: Optional[str] = Query(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_for_download),
     db: AsyncSession = Depends(get_db),
 ):
     """Export filtered dosen data to Excel."""

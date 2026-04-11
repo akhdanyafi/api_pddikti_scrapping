@@ -5,7 +5,7 @@ PDDikti Dosen Explorer — Authentication & Authorization
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, Query, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -113,6 +113,77 @@ async def get_current_user(
         )
 
     # Update user last activity
+    user.last_activity = datetime.now(timezone.utc)
+    await db.commit()
+
+    return user
+
+
+async def get_current_user_for_download(
+    request: Request,
+    token_param: Optional[str] = Query(None, alias="token"),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Like get_current_user but also accepts token via query param (for browser downloads)."""
+    # Prefer Authorization header, fall back to ?token= query param
+    raw_token = credentials.credentials if credentials else token_param
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token diperlukan untuk akses"
+        )
+
+    payload = decode_token(raw_token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token tidak valid atau sudah expired"
+        )
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token tidak valid"
+        )
+
+    result = await db.execute(
+        select(UserSession).where(
+            and_(
+                UserSession.user_id == int(user_id),
+                UserSession.token == raw_token,
+                UserSession.is_active == True
+            )
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesi telah berakhir. Silakan login kembali."
+        )
+
+    if session.last_activity:
+        inactivity = (datetime.now(timezone.utc) - session.last_activity.replace(tzinfo=timezone.utc)).total_seconds()
+        if inactivity > settings.INACTIVITY_TIMEOUT:
+            await _invalidate_session(db, session, int(user_id))
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sesi expired karena tidak ada aktivitas. Silakan login kembali."
+            )
+
+    session.last_activity = datetime.now(timezone.utc)
+    await db.commit()
+
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Akun tidak ditemukan atau nonaktif"
+        )
+
     user.last_activity = datetime.now(timezone.utc)
     await db.commit()
 
