@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import get_settings
-from database import init_db, AsyncSessionLocal
+from database import init_db, AsyncSessionLocal, engine
 from auth import create_default_admin
 
 from routers.auth_router import router as auth_router
@@ -161,6 +161,31 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/api/migrate")
+async def run_migration():
+    """One-time endpoint to add missing columns to existing tables."""
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE `scrape_job` ADD COLUMN `total_prodi_detail` INTEGER DEFAULT 0",
+        "ALTER TABLE `scrape_job` ADD COLUMN `new_prodi_detail` INTEGER DEFAULT 0",
+        "ALTER TABLE `perguruan_tinggi` ADD COLUMN `kelompok` VARCHAR(50) NULL",
+        "ALTER TABLE `perguruan_tinggi` ADD COLUMN `pembina` VARCHAR(50) NULL",
+        "ALTER TABLE `perguruan_tinggi` ADD COLUMN `status_pt` VARCHAR(50) NULL",
+    ]
+    results = []
+    async with engine.begin() as conn:
+        for sql in migrations:
+            try:
+                await conn.execute(text(sql))
+                results.append(f"✅ {sql}")
+            except Exception as e:
+                if "1060" in str(e):  # Duplicate column = already exists
+                    results.append(f"⏭️ Already exists, skipped")
+                else:
+                    results.append(f"❌ {str(e)}")
+    return {"results": results, "message": "Migration complete"}
 
 
 # Global exception handler — return error detail instead of plain "Internal Server Error"
