@@ -5,7 +5,6 @@ Refactored from pddikti_dosen_ekosyariah.py for async backend integration.
 
 import asyncio
 import json
-import os
 import re
 import time
 from datetime import datetime, timezone
@@ -28,6 +27,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Accept": "application/json",
 }
+
 TIMEOUT = 40
 MAX_RETRIES = 3
 RETRY_DELAY = 2
@@ -38,10 +38,6 @@ DEFAULT_SEMESTERS = [
     "20252", "20251", "20242", "20241", "20232", "20231",
     "20222", "20221", "20212", "20211"
 ]
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "data")
-PRODI_LIST_FILE = os.path.join(DATA_DIR, "prodi_target_list.json")
 
 # ── 22 Official Prodi Categories ──
 RUMPUN_PRODI_RESMI = [
@@ -157,6 +153,22 @@ PRODI_SEARCH_VARIANTS = {
     "EKONOMI SYARIAH (MANAJEMEN SYARIAH)": ["EKONOMI SYARIAH", "MANAJEMEN SYARIAH"],
     "HUKUM EKONOMI SYARIAH (MUAMALAH)": ["HUKUM EKONOMI SYARIAH", "MUAMALAH"],
 }
+
+
+def get_rumpun_search_terms(rumpun: str) -> list[str]:
+    """Build search keywords for nationwide prodi discovery per rumpun."""
+    terms = {rumpun.strip().upper()}
+
+    for alias, normalized in PRODI_NORMALIZATION.items():
+        if normalized == rumpun:
+            terms.add(alias.strip().upper())
+
+    if rumpun in PRODI_SEARCH_VARIANTS:
+        for alias in PRODI_SEARCH_VARIANTS[rumpun]:
+            terms.add(alias.strip().upper())
+
+    # Search broad terms first so we can discover all campuses for each rumpun.
+    return sorted(terms, key=len, reverse=True)
 
 
 def normalize_prodi_name(api_name: str) -> Optional[str]:
@@ -307,105 +319,111 @@ async def run_scraping_job(
         try:
             await send_log(job_id, "info", f"🚀 Memulai scraping untuk {len(prodi_filter)} rumpun prodi...", db)
 
-            # Load prodi target list
-            if not os.path.exists(PRODI_LIST_FILE):
-                await send_log(job_id, "error", f"❌ File prodi_target_list.json tidak ditemukan", db)
-                await _fail_job(db, job_id, "prodi_target_list.json not found")
-                return
-
-            with open(PRODI_LIST_FILE, "r") as f:
-                all_targets = json.load(f)
-
-            # Filter targets by selected rumpun
-            targets = []
-            for t in all_targets:
-                rumpun = normalize_prodi_name(t["prodi"])
-                if rumpun and rumpun in prodi_filter:
-                    # Filter by PT name if specified
-                    if pt_filter:
-                        pt_name = t.get("pt", "").upper()
-                        if pt_filter.strip().upper() not in pt_name:
-                            continue
-                    t["rumpun"] = rumpun
-                    targets.append(t)
-
-            filter_info = f"📋 Ditemukan {len(targets)} prodi target dari filter"
-            if pt_filter:
-                filter_info += f" (PT: {pt_filter})"
-            await send_log(job_id, "info", filter_info, db)
-
-            # Update job
-            await db.execute(
-                update(ScrapeJob).where(ScrapeJob.id == job_id).values(total_prodi=len(targets))
-            )
-            await db.commit()
-
-            # STEP 1: Resolve prodi IDs
-            await send_log(job_id, "info", "🔍 STEP 1: Resolving prodi IDs dari API PDDikti...", db)
+            # STEP 1: Nationwide discovery prodi IDs per selected rumpun
+            await send_log(job_id, "info", "🌏 STEP 1: Discovery prodi nasional dari API PDDikti...", db)
             resolved = []
-            not_found = 0
             seen_ids = set()
 
-            for i, t in enumerate(targets, 1):
-                prodi_name = t["prodi"]
-                jenjang = t.get("jenjang", "")
-                pt_name = t["pt"]
-                rumpun = t["rumpun"]
+            for rumpun_index, rumpun in enumerate(prodi_filter, 1):
+                queries = get_rumpun_search_terms(rumpun)
+                before_count = len(resolved)
 
-                queries = generate_search_queries(prodi_name, pt_name)
-                matched = None
+                await send_log(
+                    job_id,
+                    "info",
+                    f"🔎 [{rumpun_index}/{len(prodi_filter)}] Discovery rumpun '{rumpun}' "
+                    f"dengan {len(queries)} kata kunci",
+                    db,
+                )
 
-                for query in queries:
+                for query_index, query in enumerate(queries, 1):
                     await asyncio.sleep(REQ_DELAY)
                     results = await asyncio.to_thread(fetch_api, f"pencarian/prodi/{query}")
-                    matched = match_prodi(results, prodi_name, jenjang, pt_name)
-                    if matched:
-                        break
+                    if not isinstance(results, list):
+                        continue
 
-                if matched:
-                    pid = matched.get("id", "")
-                    if pid and pid not in seen_ids:
+                    for item in results:
+                        if not isinstance(item, dict):
+                            continue
+
+                        pid = (item.get("id", "") or "").strip()
+                        nama = (item.get("nama", "") or "").strip()
+                        pt_name = (item.get("pt", "") or "").strip()
+                        jenjang = (item.get("jenjang", "") or "").strip()
+
+                        if not pid or not nama or not pt_name:
+                            continue
+                        if pid in seen_ids:
+                            continue
+
+                        normalized = normalize_prodi_name(nama)
+                        if normalized != rumpun:
+                            continue
+
+                        if pt_filter and pt_filter.strip().upper() not in pt_name.upper():
+                            continue
+
                         seen_ids.add(pid)
                         resolved.append({
                             "id": pid,
-                            "nama": matched.get("nama", prodi_name),
-                            "jenjang": matched.get("jenjang", jenjang),
-                            "pt": matched.get("pt", pt_name),
-                            "pt_singkat": matched.get("pt_singkat", ""),
-                            "target_prodi": prodi_name,
+                            "nama": nama,
+                            "jenjang": jenjang,
+                            "pt": pt_name,
+                            "pt_singkat": (item.get("pt_singkat", "") or "").strip(),
+                            "target_prodi": nama,
                             "target_pt": pt_name,
                             "rumpun": rumpun,
                         })
-                else:
-                    not_found += 1
 
-                if i % 25 == 0 or i == len(targets):
-                    await send_log(
-                        job_id, "info",
-                        f"🔍 Progress resolve: {i}/{len(targets)} — "
-                        f"resolved: {len(resolved)}, gagal: {not_found}",
-                        db
-                    )
-                    await send_progress(job_id, {
-                        "phase": "resolve",
-                        "current": i,
-                        "total": len(targets),
-                        "resolved": len(resolved),
-                    })
+                    if query_index % 5 == 0 or query_index == len(queries):
+                        await send_progress(job_id, {
+                            "phase": "resolve",
+                            "current": query_index,
+                            "total": len(queries),
+                            "resolved": len(resolved),
+                        })
 
-                    # Update job
-                    await db.execute(
-                        update(ScrapeJob).where(ScrapeJob.id == job_id).values(
-                            resolved_prodi=len(resolved)
-                        )
+                discovered = len(resolved) - before_count
+                await send_log(
+                    job_id,
+                    "info",
+                    f"✅ Rumpun '{rumpun}': {discovered} prodi berhasil ditemukan",
+                    db,
+                )
+
+                await db.execute(
+                    update(ScrapeJob).where(ScrapeJob.id == job_id).values(
+                        total_prodi=len(resolved),
+                        resolved_prodi=len(resolved),
                     )
-                    await db.commit()
+                )
+                await db.commit()
 
             await send_log(
                 job_id, "success",
-                f"✅ STEP 1 selesai: {len(resolved)} prodi resolved, {not_found} tidak ditemukan",
+                f"✅ STEP 1 selesai: {len(resolved)} prodi nasional berhasil resolved",
                 db
             )
+
+            if not resolved:
+                await send_log(
+                    job_id,
+                    "warning",
+                    "⚠️ Tidak ada prodi yang berhasil ditemukan dari filter saat ini",
+                    db,
+                )
+                await db.execute(
+                    update(ScrapeJob).where(ScrapeJob.id == job_id).values(
+                        status="completed",
+                        completed_at=datetime.now(timezone.utc),
+                        total_prodi=0,
+                        resolved_prodi=0,
+                        total_dosen=0,
+                        new_dosen=0,
+                    )
+                )
+                await db.commit()
+                return
 
             # STEP 2: Fetch dosen homebase
             await send_log(
