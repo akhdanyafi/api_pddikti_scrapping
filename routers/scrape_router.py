@@ -16,7 +16,7 @@ from auth import get_current_user, log_activity
 from database import get_db, AsyncSessionLocal
 from models import ScrapeJob, ScrapeLog, User
 
-router = APIRouter(prefix="/api_v2/scrape", tags=["scrape"])
+router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 
 # Active WebSocket connections per job
 active_connections: dict[int, list[WebSocket]] = {}

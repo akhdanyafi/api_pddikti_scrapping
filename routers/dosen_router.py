@@ -16,7 +16,7 @@ from auth import get_current_user, get_current_user_for_download, log_activity
 from database import get_db
 from models import Dosen, PerguruanTinggi, ProdiDetail, ProgramStudi, ScrapeJob, User
 
-router = APIRouter(prefix="/api_v2/dosen", tags=["dosen"])
+router = APIRouter(prefix="/api/dosen", tags=["dosen"])
 
 
 @router.get("")

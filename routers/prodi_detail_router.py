@@ -16,7 +16,7 @@ from auth import get_current_user, get_current_user_for_download, log_activity
 from database import get_db
 from models import ProdiDetail, PerguruanTinggi, ScrapeJob, User
 
-router = APIRouter(prefix="/api_v2/prodi-detail", tags=["prodi-detail"])
+router = APIRouter(prefix="/api/prodi-detail", tags=["prodi-detail"])
 
 
 # ── List Prodi Detail ──
